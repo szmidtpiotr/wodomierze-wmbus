@@ -1,0 +1,21 @@
+# Polaczenia CC1101 -> XIAO ESP32-S3. Render: wireviz wiring.yml
+connectors:
+  XIAO:
+    type: Seeed XIAO ESP32-S3
+    subtype: female
+    pinlabels: [3V3, GND, D8 (GPIO7), D10 (GPIO9), D9 (GPIO8), D3 (GPIO4), D2 (GPIO3)]
+  CC1101:
+    type: Modul CC1101 868 MHz
+    subtype: male
+    pinlabels: [VCC, GND, SCK, MOSI, MISO, CSN, GDO0]
+cables:
+  W1:
+    gauge: 0.25 mm2
+    length: 0.1
+    colors: [RD, BK, YE, GN, BU, WH, OG]
+    wirecount: 7
+connections:
+  -
+    - XIAO: [1, 2, 3, 4, 5, 6, 7]
+    - W1: [1, 2, 3, 4, 5, 6, 7]
+    - CC1101: [1, 2, 3, 4, 5, 6, 7]

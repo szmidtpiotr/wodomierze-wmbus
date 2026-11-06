@@ -1,0 +1,228 @@
+# Odbiornik wodomierzy wM-Bus: XIAO ESP32-S3 + CC1101 (868,95 MHz, tryb T1)
+# WERSJA NA DWA LICZNIKI (glowny + podlicznik, np. ogrod). Jeden licznik: wodomierze.yaml.
+#
+# Liczniki z nakladka Apator AT-WMBUS-16-2 (driver apator162).
+# WPISZ SWOJE ID w polu meter_id (patrz docs/05-lowienie-id.md).
+#
+# Polaczenia CC1101 -> XIAO ESP32-S3 (schemat: docs/img/wiring.png):
+#   VCC   -> 3V3        (NIE 5V, CC1101 to uklad 3,3 V)
+#   GND   -> GND
+#   SCK   -> D8  / GPIO7
+#   MOSI  -> D10 / GPIO9
+#   MISO  -> D9  / GPIO8   (na module bywa opisany MISO/GDO1)
+#   CSN   -> D3  / GPIO4
+#   GDO0  -> D2  / GPIO3
+#   GDO2  -> niepodlaczone
+
+substitutions:
+  name: wodomierze
+  friendly_name: Wodomierze
+  # ID radiowe nakladki (8 cyfr szesnastkowo). PRZYKLAD - zmien na swoje.
+  meter_id: "0x12345678"
+  meter_offset: "0.0"
+  # Drugi licznik (podlicznik za glownym, np. ogrod). PRZYKLAD - zmien.
+  garden_id: "0x87654321"
+  garden_offset: "0.0"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: false
+
+esp32:
+  board: seeed_xiao_esp32s3
+  variant: ESP32S3
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+logger:
+  hardware_uart: USB_CDC
+  # INFO, nie DEBUG: CC1101 sypie ~1-2 pakietami szumu na sekunde, a kazdy
+  # z nich to dwie linie logu. Na DEBUG zalewa to subskrypcje logow po API
+  # i HA dostaje "Connection reset by peer". Do diagnostyki podnies czasowo.
+  level: INFO
+
+api:
+  # Limit domyslnie 5. Sesje `esphome logs` i zawieszone klienty potrafia go
+  # wyczerpac; wtedy encje stoja na `unavailable` mimo ze plytka odpowiada.
+  max_connections: 10
+  # Bez klucza kazdy w sieci moze czytac dane i sterowac plytka.
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  reboot_timeout: 5min
+  # Awaryjna siec plytki, gdy nie widzi Twojego WiFi.
+  ap:
+    ssid: "Wodomierze"
+    password: !secret ap_password
+
+captive_portal:
+
+time:
+  - platform: homeassistant
+
+web_server:
+  # Domyslnie strona plytki ma formularz wgrania firmware BEZ uwierzytelnienia
+  # (haslo OTA chroni tylko port 3232). Wylaczamy upload i dajemy login.
+  ota: false
+  auth:
+    username: !secret web_username
+    password: !secret web_password
+
+external_components:
+  - source: github://SzczepanLeon/esphome-components@main
+    components: [wmbus_radio, wmbus_common, wmbus_meter]
+
+# Tylko potrzebny sterownik - wszystkie nie zmieszcza sie sensownie we flashu.
+wmbus_common:
+  drivers:
+    - apator162
+
+spi:
+  clk_pin: GPIO7
+  mosi_pin: GPIO9
+  miso_pin: GPIO8
+
+wmbus_radio:
+  radio_type: CC1101
+  cs_pin: GPIO4
+  irq_pin: GPIO3
+  frequency: 868.95MHz
+  # Loguje KAZDA ramke z dobra suma CRC, takze z cudzych licznikow.
+  # Sluzy do lowienia ID (docs/05-lowienie-id.md).
+  on_frame:
+    - then:
+        - logger.log:
+            # level INFO, bo logger.log domyslnie loguje na DEBUG,
+            # a firmware ma prog INFO - bez tego wpis ginie.
+            level: INFO
+            format: "RAMKA: RSSI=%ddBm len=%d hex=%s"
+            args: ['frame->rssi()', 'frame->data().size()', 'frame->as_hex().c_str()']
+
+wmbus_meter:
+  - id: water_main
+    meter_id: ${meter_id}
+    type: apator162
+    # Nakladki Apator AT-WMBUS-16-2 nadaja bez szyfrowania (klucz z samych zer).
+    key: "00000000000000000000000000000000"
+    mode:
+      - T1
+
+  - id: water_garden
+    meter_id: ${garden_id}
+    type: apator162
+    key: "00000000000000000000000000000000"
+    mode:
+      - T1
+
+sensor:
+  - platform: wmbus_meter
+    parent_id: water_main
+    field: total_m3
+    id: total_main
+    name: "Wodomierz - stan"
+    filters:
+      - offset: ${meter_offset}
+    unit_of_measurement: "m³"
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 3
+    icon: "mdi:water"
+
+  - platform: wmbus_meter
+    parent_id: water_main
+    field: rssi_dbm
+    name: "Wodomierz - RSSI"
+    unit_of_measurement: "dBm"
+    device_class: signal_strength
+    state_class: measurement
+    entity_category: diagnostic
+    accuracy_decimals: 0
+
+  - platform: wmbus_meter
+    parent_id: water_garden
+    field: total_m3
+    id: total_garden
+    name: "Wodomierz podlicznik - stan"
+    filters:
+      - offset: ${garden_offset}
+    unit_of_measurement: "m³"
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 3
+    icon: "mdi:water"
+
+  - platform: wmbus_meter
+    parent_id: water_garden
+    field: rssi_dbm
+    name: "Wodomierz podlicznik - RSSI"
+    unit_of_measurement: "dBm"
+    device_class: signal_strength
+    state_class: measurement
+    entity_category: diagnostic
+    accuracy_decimals: 0
+
+  # Zuzycie samego budynku = glowny - podlicznik.
+  # Zatrzask monotonicznosci jest konieczny: liczniki nadaja niezaleznie, co
+  # kilkanascie minut. Gdy podlicznik zaktualizuje sie przed glownym, roznica
+  # chwilowo spada, a total_increasing potraktowalby to jak wyzerowanie
+  # licznika i doliczyl falszywy skok.
+  - platform: template
+    name: "Wodomierz dom - stan"
+    id: total_house
+    unit_of_measurement: "m³"
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 3
+    icon: "mdi:home"
+    update_interval: 60s
+    lambda: |-
+      if (isnan(id(total_main).state) || isnan(id(total_garden).state)) {
+        return {};
+      }
+      float v = id(total_main).state - id(total_garden).state;
+      static float last = -1.0f;
+      if (v < last) {
+        return last;
+      }
+      last = v;
+      return v;
+
+  - platform: wifi_signal
+    name: "WiFi RSSI"
+    update_interval: 60s
+    entity_category: diagnostic
+
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+    entity_category: diagnostic
+
+text_sensor:
+  - platform: wmbus_meter
+    parent_id: water_main
+    field: timestamp
+    name: "Wodomierz - ostatni telegram"
+
+  - platform: wmbus_meter
+    parent_id: water_garden
+    field: timestamp
+    name: "Wodomierz podlicznik - ostatni telegram"
+
+binary_sensor:
+  - platform: status
+    name: "Status"
+    entity_category: diagnostic
+
+button:
+  - platform: restart
+    name: "Restart"
+    entity_category: diagnostic
